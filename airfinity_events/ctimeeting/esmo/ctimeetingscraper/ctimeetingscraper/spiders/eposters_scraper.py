@@ -6,6 +6,11 @@ import scrapy
 import uuid
 from nameparser import HumanName
 from datetime import datetime
+import re
+
+
+DISCLOSURE_AUTHOR_PATTERN = re.compile(
+    '(?P<fullname>[A-Z]\.\s[A-Za-z\s]+):(?P<title>(.*?)\.)')
 
 
 class EPostersScraper(scrapy.Spider):
@@ -14,7 +19,7 @@ class EPostersScraper(scrapy.Spider):
     """
 
     name = "e_posters_scraper"
-    eid = str(uuid.uuid4()) # TODO: Unify with eid from sessions scraper
+    eid = str(uuid.uuid4())  # TODO: Unify with eid from sessions scraper
 
     def start_requests(self):
         """
@@ -84,8 +89,30 @@ class EPostersScraper(scrapy.Spider):
             for speaker in speakers_block:
                 ep_persons.append(self.scrape_person(
                     speaker, "speaker", "posterperson", e_poster["id"]))
-        # TODO add persons from Disclosure
+        if "description" in e_poster.keys():
+            eposter_disclosure = e_poster["description"].split("Disclosure")[-1]
+            ep_persons += self.extract_ep_disclosure_persons(
+                eposter_disclosure, "author", "posterperson", e_poster["id"])
         return ep_persons
+
+    def extract_ep_disclosure_persons(self, eposter_disclosure, prole, pclass, p_cid):
+        """
+        Extracts all authors from disclosure.
+        """
+
+        found_authors = re.findall(DISCLOSURE_AUTHOR_PATTERN, eposter_disclosure)
+        ep_disclosure_persons = []
+        if len(found_authors) >= 2:
+            for person in found_authors[1:]:
+                pdict = {
+                    "event_id": self.eid, "class": pclass, "content_id": p_cid, "role": prole,
+                    "full_name": person[0], "title": person[1]}
+                pname = HumanName(pdict["full_name"])
+                pdict["first_name"] = pname.first
+                pdict["last_name"] = pname.last
+                pdict["second_name"] = pname.middle
+                ep_disclosure_persons.append(pdict)
+        return ep_disclosure_persons
 
     def scrape_person(self, pblock, prole, pclass, p_cid):
         """
