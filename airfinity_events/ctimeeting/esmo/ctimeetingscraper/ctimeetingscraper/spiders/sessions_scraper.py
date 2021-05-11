@@ -6,6 +6,10 @@ import scrapy
 import uuid
 from nameparser import HumanName
 from datetime import datetime
+import re
+
+DISCLOSURE_AUTHOR_PATTERN = re.compile(
+    '(?P<fullname>[A-Z]\.\s[A-Za-z\s]+):(?P<title>(.*?)\.)')
 
 
 class SessionsScraper(scrapy.Spider):
@@ -151,7 +155,7 @@ class SessionsScraper(scrapy.Spider):
             pdict["start_time"], pdict["end_time"] = self.compute_date(sday, ptime)
         except:
             pass
-        if len(pblock.css(".abstract"))>=1:
+        if len(pblock.css(".abstract")) >= 1:
             pdict["description"] = " ".join(pblock.css(".abstract *::text").extract()).strip()
         return pdict
 
@@ -170,7 +174,30 @@ class SessionsScraper(scrapy.Spider):
                     presentation["id"]))
         except:
             pass
+        if "description" in presentation.keys():
+            disclosure = presentation["description"].split("Disclosure")[-1]
+            presenters += self.extract_disclosure_persons(
+                disclosure, "author", "presentationperson", presentation["id"])
         return presenters
+
+    def extract_disclosure_persons(self, eposter_disclosure, prole, pclass, p_cid):
+        """
+        Extracts all authors from disclosure.
+        """
+
+        found_authors = re.findall(DISCLOSURE_AUTHOR_PATTERN, eposter_disclosure)
+        ep_disclosure_persons = []
+        if len(found_authors) >= 2:
+            for person in found_authors[1:]:
+                pdict = {
+                    "event_id": self.eid, "class": pclass, "content_id": p_cid, "role": prole,
+                    "full_name": person[0], "title": person[1]}
+                pname = HumanName(pdict["full_name"])
+                pdict["first_name"] = pname.first
+                pdict["last_name"] = pname.last
+                pdict["second_name"] = pname.middle
+                ep_disclosure_persons.append(pdict)
+        return ep_disclosure_persons
 
     def scrape_person(self, pblock, prole, pclass, p_cid):
         """
