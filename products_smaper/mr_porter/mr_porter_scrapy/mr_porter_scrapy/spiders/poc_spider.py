@@ -3,39 +3,59 @@ POC products scraping spider.
 """
 
 import scrapy
+import re
 
 
 class POCProductsSpider(scrapy.Spider):
     """
-    POC Spider class for scraping one product example.
+    POC Spider class for scraping products examples.
     """
 
     name = "poc_products_spider"
+    model_measures_pattern = re.compile(
+        """Model measures: chest (?P<product_chest>[\d"']+\/ \d+cm), height (?P<product_height>[\d"']+\/ \d+cm)""")
+    ingredients_pattern = re.compile('\d{2}% [A-Za-z\d\s]+')
 
     def start_requests(self):
         """
-        Requests list of products URLs (one product for POC code).
+        Requests list of products URLs (one product URL for POC code).
 
         :return: Generator of request jobs (one job per URL).
         """
 
         lists_urls = ["https://www.mrporter.com/en-us/mens/product/mr-p/clothing/"
                       + "winter-coats/checked-brushed-virgin-wool-and-llama-hair-blend-coat/33599693056299663"]
-        for auto_inc_id, url in enumerate(lists_urls):
-            yield scrapy.Request(url=url, meta={"id": auto_inc_id+1}, callback=self.scrape_product)
+        for url in lists_urls:
+            yield scrapy.Request(url=url, callback=self.scrape_products)
+
+    def scrape_products(self, response):
+        """
+        Scrapes products corresponding to response.url. For that purpose, method will loop
+        on 'select' options for colors, sizes etc.
+
+        :param response: URL requesting response.
+        :return: Generator of request jobs (one job per 'select' combination possibility).
+        """
+
+        available_sizes = response.css(".multipleSizes")[0].css(
+            ".CombinedSelect11__option::attr(value)").extract()
+        for auto_inc_id, size in enumerate(available_sizes):
+            yield scrapy.Request(
+                url=response.url, meta={"id": auto_inc_id, "size": size}, callback=self.scrape_product,
+                dont_filter=True)
 
     def scrape_product(self, response):
         """
-        Scrapes product.
+        Scrapes one product.
 
         :param response: Product's URL requesting response.
-        :return: Generator of dictionary with scraped product.
+        :return: dictionary with scraped product.
         """
 
         product_dict = {}
         brand, shop_more_items = self.scrape_level_0(response, product_dict)
-        self.scrape_attributes(response, product_dict, brand, shop_more_items)
-        self.scrape_additional_features(response, product_dict)
+        additional_features = self.scrape_additional_features(response, product_dict)
+        self.scrape_attributes(response, product_dict, brand, shop_more_items, additional_features)
         yield product_dict
 
     @staticmethod
@@ -80,8 +100,7 @@ class POCProductsSpider(scrapy.Spider):
         product_dict["SKU"] = ""
         return brand, shop_more_items
 
-    @staticmethod
-    def scrape_attributes(response, product_dict, brand, shop_more_items):
+    def scrape_attributes(self, response, product_dict, brand, shop_more_items, additional_features):
         """
         Updates product dictionary with attributes (e.g. manufacturer, price etc.).
 
@@ -89,6 +108,7 @@ class POCProductsSpider(scrapy.Spider):
         :param product_dict: Dictionary with product's fields values.
         :param brand: product's brand
         :param shop_more_items: product's related categories items.
+        :param additional_features: additional features as a list of texts.
         :return: 1 if processing succeeded.
         """
 
@@ -100,11 +120,32 @@ class POCProductsSpider(scrapy.Spider):
         product_dict["attributes"]["price"] = price
         discount = response.css(".PriceWithSchema9__discount::text").extract_first()
         product_dict["attributes"]["discount"] = discount
-        available_sizes = response.css(".multipleSizes")[0].css(
-            ".CombinedSelect11__option::attr(value)").extract()
-        product_dict["attributes"]["sizes"] = available_sizes
+        product_dict["attributes"]["sizes"] = response.meta["size"]
         all_categories = shop_more_items[1:]
         product_dict["attributes"]["categories"] = all_categories
+        self.parse_attributes(response, product_dict, additional_features)
+        return 1
+
+    def parse_attributes(self, response, product_dict, additional_features):
+        """
+        Parses available attributes from additional features listings and updates product dictionary
+        with that attributes.
+
+        :param response: Product's URL requesting response.
+        :param product_dict: Dictionary with product's fields values.
+        :param additional_features: additional features as a list of texts.
+        :return: 1 if processing succeeded.
+        """
+
+        product_dict["attributes"]["gender"] = response.url.split("/")[4]
+        for feature in additional_features:
+            if self.model_measures_pattern.search(feature) is not None:
+                product_dict["attributes"]["product_height"] = self.model_measures_pattern.search(
+                    feature).group("product_height")
+                product_dict["attributes"]["product_width"] = self.model_measures_pattern.search(
+                    feature).group("product_chest")
+            if self.ingredients_pattern.search(feature) is not None:
+                product_dict["attributes"]["ingredients"] = feature
         return 1
 
     @staticmethod
@@ -114,7 +155,7 @@ class POCProductsSpider(scrapy.Spider):
 
         :param response: Product's URL requesting response.
         :param product_dict: Dictionary with product's fields values.
-        :return: 1 if processing succeeded.
+        :return: Additional features as a list, to be used by scrape_attributes method.
         """
 
         size_fit_features = response.css(
@@ -122,4 +163,4 @@ class POCProductsSpider(scrapy.Spider):
         details_care = response.css(
             ".EditorialAccordion83__accordionContent--details_and_care")[0].css("li::text").extract()
         product_dict["additional_features"] = size_fit_features + details_care
-        return 1
+        return product_dict["additional_features"]
